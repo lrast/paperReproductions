@@ -3,33 +3,29 @@ import pytorch_lightning as pl
 
 from torch import nn
 from torch.nn.parameter import Parameter
-from torch.utils.data import TensorDataset, DataLoader
-
-from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
 
 class BasicICNN(pl.LightningModule):
-    """docstring for BasicICNN"""
+    """BasicICNN: Input convex neural network implementation"""
     def __init__(self, **hyperparameterValues):
         super(BasicICNN, self).__init__()
         
         hyperparameters = {
-            'latentDim': 6
+            'hiddenDim': 6
         }
         hyperparameters.update(hyperparameterValues)
 
         self.save_hyperparameters(hyperparameters)
 
         # layers from the inputs
-        self.initialLayer = nn.Linear(2, self.hparams.latentDim)
-        self.shortcutLayer0 = nn.Linear(2, self.hparams.latentDim)
+        self.initialLayer = nn.Linear(2, self.hparams.hiddenDim)
+        self.shortcutLayer0 = nn.Linear(2, self.hparams.hiddenDim)
         self.shortcutLayer1 = nn.Linear(2, 1)
 
         # internal layers
-        self.innerLayer0 = PositiveLinear(self.hparams.latentDim,
-                                          self.hparams.latentDim)
-        self.innerLayer1 = PositiveLinear(self.hparams.latentDim, 1)
+        self.innerLayer0 = PositiveLinear(self.hparams.hiddenDim,
+                                          self.hparams.hiddenDim)
+        self.innerLayer1 = PositiveLinear(self.hparams.hiddenDim, 1)
 
         self.nlin = nn.LeakyReLU()
 
@@ -60,6 +56,128 @@ class BasicICNN(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=1E-3)
 
 
+class PartialICNN(pl.LightningModule):
+    """PartialICNN: a neural network that is convex in some of its inputs"""
+    def __init__(self, **hyperparameterValues):
+        super(PartialICNN, self).__init__()
+        
+        hyperparameters = {
+            'convexInputDim': 2,
+            'convexHiddenDim': 20,
+
+            'nonconvexInputDim': 2, 
+            'nonconvexHiddenDim': 20,
+
+            'lr': 1E-3
+        }
+        hyperparameters.update(hyperparameterValues)
+
+        self.save_hyperparameters(hyperparameters)
+
+        # layers from the inputs
+        self.inputToInternal = nn.ModuleList([
+                nn.Linear(self.hparams.convexInputDim,
+                          self.hparams.convexHiddenDim),
+                nn.Linear(self.hparams.convexInputDim,
+                          self.hparams.convexHiddenDim),
+                nn.Linear(self.hparams.convexInputDim, 1)
+        ])
+
+        # internal layers
+        self.convexInternal = nn.ModuleList([
+                None,
+                PositiveLinear(self.hparams.convexHiddenDim,
+                               self.hparams.convexHiddenDim),
+                PositiveLinear(self.hparams.convexHiddenDim, 1)
+        ])
+
+        # non-convex auxiliary network
+        self.nonConvexInternal = nn.ModuleList([
+                nn.Linear(self.hparams.nonconvexInputDim,
+                          self.hparams.nonconvexHiddenDim),
+                nn.Linear(self.hparams.nonconvexHiddenDim,
+                          self.hparams.nonconvexHiddenDim),
+                nn.Linear(self.hparams.nonconvexHiddenDim,
+                          self.hparams.nonconvexHiddenDim)
+        ])
+
+        self.auxBatchNorm = nn.ModuleList([
+                nn.BatchNorm1d(self.hparams.nonconvexHiddenDim),
+                nn.BatchNorm1d(self.hparams.nonconvexHiddenDim),
+                nn.BatchNorm1d(self.hparams.nonconvexHiddenDim)
+        ])
+
+        # auxiliary to input
+        self.auxToInput = nn.ModuleList([
+                nn.Linear(self.hparams.nonconvexInputDim,
+                          self.hparams.convexInputDim),
+                nn.Linear(self.hparams.nonconvexHiddenDim,
+                          self.hparams.convexInputDim),
+                nn.Linear(self.hparams.nonconvexHiddenDim,
+                          self.hparams.convexInputDim)
+        ])
+
+        # auxiliary to internal
+        self.auxToInternal = nn.ModuleList([
+                None,
+                nn.Linear(self.hparams.nonconvexHiddenDim,
+                          self.hparams.convexHiddenDim),
+                nn.Linear(self.hparams.nonconvexHiddenDim, 1)
+        ])
+
+        self.auxToAdditional = nn.ModuleList([
+                nn.Linear(self.hparams.nonconvexInputDim,
+                          self.hparams.convexHiddenDim),
+                nn.Linear(self.hparams.nonconvexHiddenDim,
+                          self.hparams.convexHiddenDim),
+                nn.Linear(self.hparams.nonconvexHiddenDim, 1)
+        ])
+
+        self.nlin = nn.LeakyReLU()
+        self.ReLU = nn.ReLU()
+
+        self.trainLoss = nn.MSELoss()
+
+    def forward(self, x, y):
+        # u and z represent internal layers of the 
+        # non-convex and convex networks, respectively
+
+        for lInd in range(3):
+            if lInd == 0:
+                z = self.nlin(
+                        self.inputToInternal[0](y * self.auxToInput[0](x))
+                        + self.auxToAdditional[0](x)
+                )
+                u = self.nlin(self.auxBatchNorm[0](
+                             self.nonConvexInternal[0](x)))
+            else:
+                z = self.nlin(
+                    self.convexInternal[lInd](
+                        z * self.ReLU(self.auxToInternal[lInd](u))
+                    )
+                    + self.inputToInternal[lInd](y * self.auxToInput[lInd](u))
+                    + self.auxToAdditional[lInd](u)
+                )
+                u = self.nlin(self.auxBatchNorm[lInd](
+                            self.nonConvexInternal[lInd](u)))
+        return z
+
+    def training_step(self, batch, batchidx):
+        xs, ys, targets = batch
+
+        loss = self.trainLoss(self.forward(xs, ys), targets)
+        self.log('Train Loss', loss)
+        return loss
+
+    def validation_step(self, batch, batchidx):
+        xs, ys, targets = batch
+        loss = self.trainLoss(self.forward(xs, ys), targets)
+        self.log('Val Loss', loss)
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
+
+
 class PositiveLinear(nn.Module):
     """Positive linear layer for the internal pass of the ICNN"""
     def __init__(self, in_features, out_features):
@@ -80,32 +198,3 @@ class PositiveLinear(nn.Module):
 
     def forward(self, x):
         return nn.functional.linear(x, self.nonLin(self.weight))
-
-
-def curveFit(model, targetFunction, dirname, M=128):
-    """ Trains the model with early-stopping on validation loss """
-    xtrain = 5*torch.randn(8*M, 2)
-    ytrain = targetFunction(xtrain)
-
-    xval = 5*torch.randn(2*M, 2)
-    yval = targetFunction(xval)
-
-    trainDL = DataLoader(TensorDataset(xtrain, ytrain), batch_size=32)
-    valDL = DataLoader(TensorDataset(xval, yval), batch_size=2*M)
-
-    earlystopping = EarlyStopping(monitor='Val Loss', mode='min', 
-                                  patience=200
-                                  )
-
-    checkpoint = ModelCheckpoint(dirpath=f'lightning_logs/{dirname}',
-                                 every_n_epochs=1, 
-                                 save_top_k=1,
-                                 monitor='Val Loss'
-                                 )
-
-    trainer = pl.Trainer(logger=WandbLogger(project='InputConvexNN'),
-                         max_epochs=3000,
-                         callbacks=[checkpoint, earlystopping]
-                         )
-
-    trainer.fit(model, trainDL, valDL)
