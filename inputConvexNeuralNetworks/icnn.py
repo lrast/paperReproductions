@@ -63,10 +63,10 @@ class PartialICNN(pl.LightningModule):
         
         hyperparameters = {
             'convexInputDim': 2,
-            'convexHiddenDim': 20,
+            'convexHiddenDim': 64,
 
             'nonconvexInputDim': 2, 
-            'nonconvexHiddenDim': 20,
+            'nonconvexHiddenDim': 64,
 
             'lr': 1E-3
         }
