@@ -1,2 +1,5 @@
-*/.ipynb_checkpoints/*
-*/*/.ipynb_checkpoints/*
+.ipynb_checkpoints/
+.DS_Store
+wandb/
+__pycache__/
+lightning_logs/
