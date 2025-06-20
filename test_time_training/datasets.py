@@ -45,7 +45,7 @@ def rotated_dataset(images, method='all', return_dataset=True, tensor_embedding=
 corruption_names = ['none', 'brightness', 'gaussian_noise', 'saturate', 'contrast',
                     'glass_blur', 'shot_noise', 'defocus_blur', 'impulse_noise',
                     'snow', 'elastic_transform', 'jpeg_compression', 'spatter',
-                    'fog', 'labels', 'speckle_noise', 'frost', 'motion_blur',
+                    'fog', 'speckle_noise', 'frost', 'motion_blur',
                     'zoom_blur', 'gaussian_blur', 'pixelate']
 
 
@@ -54,15 +54,18 @@ def load_corrupted(name, severity=1, root_dir='/Users/luke/Datasets',
     """ Load data with specific synthetic corruption """
     assert severity <= 5
 
-    cifar_vanilla = CIFAR10(root=root_dir, train=False, transform=transform)
-    targets = cifar_vanilla.targets
-
     if name == 'none':
-        full_data = cifar_vanilla.data / 256
-        selection = full_data
-    else: 
+        cifar_vanilla = CIFAR10(root=root_dir, train=False, transform=transform)
+
+        targets = cifar_vanilla.targets
+        selection = cifar_vanilla.data / 256
+
+    else:
         full_data = np.load(f'{root_dir}/CIFAR-10-C/{name}.npy') / 256
+
         selection = full_data[10000*(severity - 1):10000*severity]
+        targets = np.load(f'{root_dir}/CIFAR-10-C/labels.npy'
+                          )[10000*(severity - 1):10000*severity]
         
     outputs = transform(torch.as_tensor(selection).permute([0, 3, 1, 2]).to(torch.float32))
 

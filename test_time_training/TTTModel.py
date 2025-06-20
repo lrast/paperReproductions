@@ -118,7 +118,7 @@ class TTTModel(pl.LightningModule):
         for parameter in self.secondary.parameters():
             parameter.requires_grad = False
     
-    def unfreeze_sceondary(self):
+    def unfreeze_secondary(self):
         for parameter in self.secondary.parameters():
             parameter.requires_grad = True
 
