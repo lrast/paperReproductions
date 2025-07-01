@@ -1,0 +1,6 @@
+{
+    "zeroshortBasic": "Please answer the following question, reasoning step by step and stating the final answer at the end.\nQuestion: {question}\n",
+    "zeroshortFormatted": "Please answer the following question, reasoning step by step and stating the final answer at the end as 'The final answer is: __'.\nQuestion: {question}\n",
+    "cot_prelude": "Quesion: {question}\nAnswer: {answer}\n",
+    "cot_final": "Question: {test_question}\n"
+}
