@@ -14,13 +14,20 @@ tokenizer.save_pretrained('llama_pretrain')
 problems = load_dataset("openai/gsm8k", "main")
 
 
-def extract_answer(row):
-    row['answer'] = int(row['answer'].split('####')[-1].strip().replace(',', ''))
+def add_prompt(row):
+    prompt = "Please answer the following question, reasoning step by step and stating the final answer at the end.\nQuestion: {question}\n"
+    row['question'] = prompt.format(question=row['question'])
     return row
 
 
-train_set = problems['train'].map(extract_answer)
-test_set = problems['test'].map(extract_answer)
+def extract_answer(row):
+    row['gt'] = int(row['answer'].split('####')[-1].strip().replace(',', ''))
+    return row
+
+
+train_set = problems['train'].map(extract_answer).map(add_prompt)
+test_set = problems['test'].map(extract_answer).map(add_prompt)
+
 
 train_val_split = train_set.train_test_split(test_size=0.1)
 
