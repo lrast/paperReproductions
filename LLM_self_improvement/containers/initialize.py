@@ -7,8 +7,8 @@ from datasets import Dataset, load_dataset, DatasetDict
 model = LlamaForCausalLM.from_pretrained('meta-llama/Llama-3.2-1B-Instruct')
 tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-3.2-1B-Instruct')
 
-model.save_pretrained('llama_pretrain')
-tokenizer.save_pretrained('llama_pretrain')
+model.save_pretrained('/workspace/llama_pretrain')
+tokenizer.save_pretrained('/workspace/llama_pretrain')
 
 # dataset initialization
 problems = load_dataset("openai/gsm8k", "main")
@@ -37,4 +37,4 @@ preprocessed = DatasetDict({
                              'test': test_set
                             })
 
-preprocessed.save_to_disk('gsm8k_processed')
+preprocessed.save_to_disk('/workspace/gsm8k_processed')
