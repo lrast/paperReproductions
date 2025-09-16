@@ -86,3 +86,20 @@ def fetch_dataset(filename='', split=None, device='cpu', pinned=False):
         return dataset
 
     return random_split(dataset, split)
+
+
+def consistent_subset(dataset, count=1000, seed=42):
+    """ Sample a consistent subset of images, balanced between indices. """
+    generator = torch.Generator()
+    generator.manual_seed(42)
+
+    labels = dataset.tensors[1]
+    samples_per = count // len(labels.unique())
+
+    inds = []
+    for label in labels.unique():
+        locations = torch.where(labels == label)[0]
+        loc_i = torch.randperm(len(locations), generator=generator)[0:samples_per]
+        inds.extend(locations[loc_i].tolist())
+
+    return torch.utils.data.TensorDataset(dataset.tensors[0][inds].clone(), dataset.tensors[1][inds].clone())

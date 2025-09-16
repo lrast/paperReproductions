@@ -9,23 +9,30 @@ from torchvision.transforms.v2 import Normalize, Compose, ToDtype
 
 
 class CustomMAE(ViTMAEForPreTraining):
-    def __init__(self, *args, **kwargs):
+    """ MAE wrapped that performs
+        (TDI) custom loss functions
+
+        Important note: requires preprocessed images.
+    """
+    def __init__(self, *args, preprocessor=None, **kwargs):
         super().__init__(*args, **kwargs)
 
     def forward(self, pixel_values, *args, **kwargs):
+        """ Full encode-decode cycle on the images """
         outputs = super().forward(pixel_values, *args, **kwargs)
         # add auxilliary loss functions here
         return outputs
 
     def embedding(self, pixel_values, *args, **kwargs):
+        """ Run just the forward embedding step of the MAE """
         self.disable_masking()
         return self.vit(pixel_values, *args, **kwargs).last_hidden_state
 
     def disable_masking(self):
         self.vit.config.mask_ratio = 0.0
 
-    def enable_masking(self):
-        self.vit.config.mask_ratio = 0.75
+    def enable_masking(self, mask_ratio=0.75):
+        self.vit.config.mask_ratio = mask_ratio
 
 
 class ClassifierWithTTA(torch.nn.Module):
@@ -62,10 +69,10 @@ class ClassifierWithTTA(torch.nn.Module):
                                                       use_fast=True
                                                       )
 
-        self.preprocess = make_online_transform(processor)
+        self.preprocessor = make_online_transform(processor)
 
     def forward(self, pixel_values, labels=None, **kwargs):
-        pixel_values = self.preprocess(pixel_values)
+        pixel_values = self.preprocessor(pixel_values)
         x = self.embedding.embedding(pixel_values)
         x = self.classifier.vit.encoder(x).last_hidden_state
         x = self.classifier.vit.layernorm(x)[:, 0, :]
@@ -79,12 +86,15 @@ class ClassifierWithTTA(torch.nn.Module):
                                         loss=loss,
                                         logits=logits
                                      )
-    
-    def disable_masking(self):
-        self.vit.config.mask_ratio = 0.0
 
-    def enable_masking(self):
-        self.vit.config.mask_ratio = 0.75
+    def classify(self, pixel_values):
+        return self.forward(pixel_values).logits.argmax(1)
+
+    def disable_masking(self):
+        self.embedding.disable_masking()
+
+    def enable_masking(self, mask_ratio=0.75):
+        self.embedding.enable_masking(mask_ratio)
 
     def freeze_embedding(self):
         for parameter in self.embedding.parameters():
