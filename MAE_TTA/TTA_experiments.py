@@ -36,4 +36,4 @@ def TTA_curve(model_layers, dataset, device='cuda:0'):
                                       device=device)
         results += sample
 
-    return results
+    return results / len(dataset)

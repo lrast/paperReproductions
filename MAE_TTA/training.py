@@ -140,7 +140,7 @@ def test_time_adaptation(model, inputs, labels=None,
 
     embedding_model.enable_masking(mask_ratio)
 
-    train_data = model.preprocessor(inputs)
+    train_data = model.preprocess(inputs)
     inputs = inputs.to(device)
     train_data = train_data.to(device)
 

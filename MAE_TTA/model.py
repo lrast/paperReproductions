@@ -69,10 +69,10 @@ class ClassifierWithTTA(torch.nn.Module):
                                                       use_fast=True
                                                       )
 
-        self.preprocessor = make_online_transform(processor)
+        self.preprocess = make_online_transform(processor)
 
     def forward(self, pixel_values, labels=None, **kwargs):
-        pixel_values = self.preprocessor(pixel_values)
+        pixel_values = self.preprocess(pixel_values)
         x = self.embedding.embedding(pixel_values)
         x = self.classifier.vit.encoder(x).last_hidden_state
         x = self.classifier.vit.layernorm(x)[:, 0, :]
