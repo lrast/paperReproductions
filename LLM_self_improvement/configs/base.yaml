@@ -1,0 +1,22 @@
+model:
+  model_name: meta-llama/Llama-3.2-1B-Instruct
+
+data:
+  seed: 42
+  generation_mode: gt_targets
+  prompt: 'Please answer the following question, reasoning step by step and stating the final answer at the end.\nQuestion: {question}\n'
+  chat_format: False
+
+train:
+  run_name: debug
+  num_train_epochs: 3
+
+self_improvement:
+  num_loops: 10
+
+hydra:
+  run:
+    dir: experiments/${now:%Y-%m-%d\(%H:%M:%S\)}-${train.run_name}
+  sweep:
+    dir: experiments/sweeps/${now:%Y-%m-%d\(%H:%M:%S\)}-${train.run_name}
+    subdir: ${hydra.job.num}
