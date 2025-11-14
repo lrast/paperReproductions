@@ -1,9 +1,8 @@
 # Trainers for self-training
-
+import shutil
 import pytorch_lightning as pl
 
-from pathlib import Path
-from pytorch_lightning.callbacks import LearningRateMonitor, Callback
+from pytorch_lightning.callbacks import LearningRateMonitor, Callback, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
 
@@ -23,11 +22,19 @@ def get_trainer(datamodule, num_train_epochs=1,
 
     # Dataset update callback: saves checkpoints and updates the dataset
 
-    dataset_update_callback = DatasetUpdateCallback(datamodule)
+    dataset_update_callback = DatasetUpdateCallback(datamodule, output_dir)
+
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=output_dir,
+        filename='best-checkpoint',
+        save_top_k=1,
+        monitor='val/loss',
+        mode='min'
+    )
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
     
-    callbacks = [lr_monitor, dataset_update_callback]
+    callbacks = [lr_monitor, dataset_update_callback, checkpoint_callback]
     
     # Setup wandb logger
     wandb_logger = WandbLogger(
@@ -61,19 +68,17 @@ class DatasetUpdateCallback(Callback):
                  filename='checkpoint-epoch={epoch}', **kwargs):
         super().__init__()
         self.datamodule = datamodule
-        self.dirpath = Path()
+        self.dirpath = dirpath
         self.filename = filename
 
     def on_train_epoch_end(self, trainer, pl_module):
         """Called at the end of each training epoch"""
-        ckpt_path = self.dirpath / self.filename.format(epoch=trainer.current_epoch)
-        trainer.save_checkpoint(ckpt_path)
-        print('############ checkpoint saved ############')
+        model_path = self.dirpath / self.filename.format(epoch=trainer.current_epoch)
+        pl_module.save_pretrained(model_path)
 
-        train_metrics, val_metrics = self.datamodule.update_model(ckpt_path)
+        train_metrics, val_metrics = self.datamodule.update_model(model_path)
 
-        print('train metrics:', train_metrics)
-        print('val metrics:', val_metrics)
+        shutil.rmtree(model_path)
 
         train_metrics = {f'train/{key}': value for key, value in train_metrics.items()}
         val_metrics = {f'eval/{key}': value for key, value in val_metrics.items()}

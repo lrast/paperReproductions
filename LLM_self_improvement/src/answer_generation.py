@@ -12,8 +12,6 @@ def generate_QA_pairs(dataset, pipeline, generation_mode):
         rows, batch_metrics = make_new_rows(batch, answers)
         metrics.extend(batch_metrics)
 
-        print('answer generation, metrics: ', len(metrics))
-
         # filter the answers according to the generation mode.
         match generation_mode:
             case 'gt_answers':

@@ -1,5 +1,6 @@
 # Datasets for self-training
 import torch
+import gc
 import pytorch_lightning as pl
 
 from datasets import load_dataset
@@ -7,7 +8,7 @@ from torch.utils.data import DataLoader
 from transformers import pipeline, DataCollatorForLanguageModeling
 
 from src.models import LlamaLightningModule
-from src.answeer_generation import generate_QA_pairs
+from src.answer_generation import generate_QA_pairs
 #from vllm import LLM
 
 
@@ -16,7 +17,7 @@ class SelfImprovementDataModule(pl.LightningDataModule):
     Re-generates answers between epochs.
     """
     
-    def __init__(self, model, prompt='{question}',
+    def __init__(self, checkpoint, tokenizer, prompt='{question}',
                  split='train', generation_mode='gt_answers', chat_format=False,
                  use_vllm=False, seed=42,
                  batch_size=4, num_workers=0, 
@@ -40,8 +41,6 @@ class SelfImprovementDataModule(pl.LightningDataModule):
         val_set = self.problems.pop('test')
         self.problems['eval'] = val_set
 
-        self.model = model
-
         # generation parameters
         self.use_vllm = use_vllm
         self.generation_mode = generation_mode
@@ -52,48 +51,38 @@ class SelfImprovementDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.max_length = max_length
         
+        self.tokenizer = tokenizer
         # Create data collator
         self.data_collator = DataCollatorForLanguageModeling(
-            tokenizer=self.model.tokenizer,
+            tokenizer=self.tokenizer,
             return_tensors='pt',
             mlm=False  # Causal LM, not masked LM,
         )
+
+        # initialize the dataset
+        self.train_dataset = None
+        self.val_dataset = None
+        self.checkpoint = checkpoint
     
     def setup(self, stage=None):
         """Setup datasets for training/validation"""
 
-        if self.use_vllm:
-            # apply vllm model
-            raise NotImplementedError('vllm later')
-        else:
-            generation_pipe = pipeline("text-generation",
-                                       model=self.model.model,
-                                       tokenizer=self.model.tokenizer,
-                                       return_full_text=False,
-                                       do_sample=True, temperature=1.,
-                                       num_return_sequences=8)
+        with TemporaryModel(self.checkpoint, self.use_vllm) as generation_pipe:
+            def generate_tokenized_answers(dataset):
+                # generate new question-answer pairs
+                QA_pairs, metrics = generate_QA_pairs(dataset, generation_pipe,
+                                                      self.generation_mode)
+                # Tokenize the dataset
+                tokenized_QA = QA_pairs.map(self.tokenized_chat, batched=False,
+                                            remove_columns=QA_pairs.column_names)
 
-        def tokenize_converstion(row):
-            return tokenized_chat(row, self.model.tokenizer,
-                                  chat_format=self.chat_format)
+                return tokenized_QA, metrics
 
-        def generate_tokenized_answers(dataset):
-            # generate new question-answer pairs
-            QA_pairs, metrics = generate_QA_pairs(dataset, generation_pipe,
-                                                  self.generation_mode)
-            # Tokenize the dataset
-            tokenized_QA = QA_pairs.map(tokenize_converstion, batched=False,
-                                        remove_columns=QA_pairs.column_names)
+            self.train_dataset, train_metrics = generate_tokenized_answers(self.problems['train'])
+            self.val_dataset, val_metrics = generate_tokenized_answers(self.problems['eval'])
 
-            return tokenized_QA, metrics
-
-        self.train_dataset, train_metrics = generate_tokenized_answers(self.problems['train'])
-        self.val_dataset, val_metrics = generate_tokenized_answers(self.problems['eval'])
-
-        self.train_dataset.set_format(type='torch')
-        self.val_dataset.set_format(type='torch')
-
-        print('######################################## setup complete #####################################')
+            self.train_dataset.set_format(type='torch')
+            self.val_dataset.set_format(type='torch')
 
         return train_metrics, val_metrics
 
@@ -101,28 +90,36 @@ class SelfImprovementDataModule(pl.LightningDataModule):
         """
         Reload the model that is used for generating data
         """
+        self.checkpoint = model_checkpoint
         # delete old 
         del self.train_dataset
         del self.val_dataset
 
-        # Re-setup to tokenize the new dataset
-        if self.use_vllm:
-            # VLLM setup
-            raise NotImplementedError('vllm later')
-        else:
-            # normal pipeline setup
-            self.model.cpu()
-            del self.model
-            torch.mps.empty_cache()
-
-            self.model = LlamaLightningModule.load_from_checkpoint(model_checkpoint)
-
         train_metrics, val_metrics = self.setup()
         return train_metrics, val_metrics
 
+    def tokenized_chat(self, row, include_answer=True):
+        """ Tokenization for question-answer pairs """
+        if self.chat_format:
+            messages = [
+                {"role": "user", "content": row['question']}
+            ]
+            if include_answer:
+                messages.append({"role": "assistant", "content": row['answer']})
+
+            return self.tokenizer.apply_chat_template(messages, tokenize=True,
+                                                      return_dict=True,
+                                                      add_generation_prompt=(not include_answer),
+                                                      )
+        else:
+            if include_answer:
+                output = self.tokenizer(row['question'] + 'Answer:' + row['answer'])
+            else:
+                output = self.tokenizer(row['question'])
+            return output
+
     def train_dataloader(self):
         """Return training dataloader"""
-        print('######################################## train dl called #####################################')
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
@@ -134,7 +131,6 @@ class SelfImprovementDataModule(pl.LightningDataModule):
     
     def val_dataloader(self):
         """Return validation dataloader"""
-        print('######################################## val dl called #####################################')
         if self.val_dataset is None:
             return None
         return DataLoader(
@@ -147,24 +143,28 @@ class SelfImprovementDataModule(pl.LightningDataModule):
         )
 
 
+class TemporaryModel(object):
+    def __init__(self, model_checkpoint, use_vllm):
+        self.use_vllm = use_vllm
+        self.raw_model = LlamaLightningModule.from_pretrained(model_checkpoint)
 
-def tokenized_chat(row, tokenizer, chat_format=False, include_answer=True):
-    """ Tokenization for question-answer pairs """
-    if chat_format:
-        messages = [
-            {"role": "user", "content": row['question']}
-        ]
-        if include_answer:
-            messages.append({"role": "assistant", "content": row['answer']})
-
-        return tokenizer.apply_chat_template(messages, tokenize=True,
-                                             return_dict=True,
-                                             add_generation_prompt=(not include_answer),
-                                             )
-
-    else:
-        if include_answer:
-            output = tokenizer(row['question'] + 'Answer:' + row['answer'])
+        if self.use_vllm:
+            # apply vllm model
+            raise NotImplementedError('vllm later')
         else:
-            output = tokenizer(row['question'])
-        return output
+            self.model = pipeline("text-generation",
+                                  model=self.raw_model.model,
+                                  tokenizer=self.raw_model.tokenizer,
+                                  return_full_text=False,
+                                  do_sample=True, temperature=1.,
+                                  num_return_sequences=8)
+
+    def __enter__(self):
+        return self.model
+
+    def __exit__(self, type, value, traceback):
+        self.raw_model.to('cpu')
+        del self.raw_model
+        del self.model
+        gc.collect()
+        torch.mps.empty_cache()

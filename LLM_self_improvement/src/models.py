@@ -50,7 +50,7 @@ class LlamaLightningModule(pl.LightningModule, PyTorchModelHubMixin):
         )
         loss = outputs.loss
         
-        self.log('train/loss', loss, on_step=True)
+        self.log('train/loss', loss, on_step=True, logger=True)
         return loss
     
     def validation_step(self, batch, batch_idx):
