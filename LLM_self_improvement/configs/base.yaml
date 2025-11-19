@@ -4,12 +4,11 @@ model:
 data:
   seed: 42
   generation_mode: gt_targets
+  use_vllm: False
   prompt: 'Please answer the following question, reasoning step by step and stating the final answer at the end.\nQuestion: {question}\n'
-  chat_format: False
 
 train:
   run_name: debug
-  num_train_epochs: 3
 
 self_improvement:
   num_loops: 10

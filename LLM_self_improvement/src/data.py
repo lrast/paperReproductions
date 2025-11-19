@@ -1,170 +1,144 @@
 # Datasets for self-training
-import torch
-import gc
-import pytorch_lightning as pl
+import pandas as pd
 
-from datasets import load_dataset
-from torch.utils.data import DataLoader
-from transformers import pipeline, DataCollatorForLanguageModeling
+from datasets import load_dataset, Dataset
+from transformers import pipeline
 
-from src.models import LlamaLightningModule
-from src.answer_generation import generate_QA_pairs
-#from vllm import LLM
+from src.answer_generation import check_format_and_get_answer, score_results
+from vllm import LLM, SamplingParams
 
 
-class SelfImprovementDataModule(pl.LightningDataModule):
-    """PyTorch Lightning DataModule for self-improvement training
-    Re-generates answers between epochs.
+def get_raw_dataset(prompt, split='train', seed=42, **kwargs):
+    """ Set up the primary dataset """
+    def extract_answer(row):
+        row['gt'] = int(row['answer'].split('####')[-1].strip().replace(',', ''))
+        return row
+
+    def add_prompt(row):
+        row['question'] = prompt.format(question=row['question'])
+        return row
+
+    if split == 'test':
+        problems = load_dataset("openai/gsm8k", "main", split='test')
+    else:
+        problems = load_dataset("openai/gsm8k", "main", split='train[0:30]')
+
+    problems = problems.map(extract_answer, batched=False,
+                            ).map(add_prompt, batched=False)
+
+    if split == 'test':
+        return problems
+
+    problems = problems.train_test_split(test_size=0.1, seed=seed)
+    val_set = problems.pop('test')
+    problems['eval'] = val_set
+
+    if split == 'train':
+        return problems['train']
+    elif split == 'val' or split == 'valid' or split =='eval':
+        return problems['eval']
+    else:
+        raise KeyError('unknown dataset split')
+
+
+def model_answers(model_dir, raw_dataset, generation_mode,
+                  use_vllm=False,
+                  **kwargs):
+    """Use the model to generate a question / answer dataset"""
+    # question: does this use the tokenizers chat format?
+
+    if use_vllm:
+        raise NotImplementedError('working on vllm compatibility')
+        sampling_params = SamplingParams(n=8, temperature=1.0)
+        model = LLM(model_dir)
+
+    else:
+        model = pipeline("text-generation",
+                         model=model_dir,
+                         tokenizer=model_dir,
+                         return_full_text=False,
+                         do_sample=True, temperature=1.,
+                         num_return_sequences=8)
+
+        QA_pairs, metrics = generate_QA_pairs(raw_dataset, model, generation_mode)
+
+    return QA_pairs, metrics
+
+
+def generate_QA_pairs(dataset, pipeline, generation_mode):
+    """ Primary interface for answer generation"""
+    metrics = []
+    outputs = []
+
+    for batch in dataset.iter(batch_size=8):
+        # make sure that the inputs are chat formatted
+        chat_formatted = list(map(chat_formatted_problems, batch['question']))
+
+        # Question: do we need to add an assistant prompt to start generation?
+        # Empirically, we're fine without it.
+
+        answers = pipeline(chat_formatted)
+        rows, batch_metrics = make_new_rows(batch, answers)
+        metrics.extend(batch_metrics)
+
+        # filter the answers according to the generation mode.
+        match generation_mode:
+            case 'gt_answers':
+                return batch
+            case 'gt_targets':
+                rows = rows[rows['result'] == rows['gt']]
+            case 'majority_vote':
+                rows = rows[rows['result'] == rows['majority_vote']]
+            case 'perfect_formatting':
+                rows = rows[rows['perfect_formatting'] == 1]
+            case 'good_formatting':
+                rows = rows[rows['good_formatting'] == 1]
+            case _:
+                raise Exception('Unkown generation mode')
+
+        outputs.append(rows.drop(columns=['good_formatting', 'perfect_formatting', 'result',
+                                 'majority_vote']))
+
+    data_with_answers = Dataset.from_pandas(pd.concat(outputs))
+
+    return data_with_answers, pd.DataFrame(metrics).mean().to_dict()
+
+
+def make_new_rows(inputs, outputs):
+    """ Parse the pipeline inputs and outputs to a new dataset, with 
+    answer evaluations
     """
+    full_outputs = []
+    metrics = []
     
-    def __init__(self, checkpoint, tokenizer, prompt='{question}',
-                 split='train', generation_mode='gt_answers', chat_format=False,
-                 use_vllm=False, seed=42,
-                 batch_size=4, num_workers=0, 
-                 max_length=512, **kwargs):
-        super().__init__()
+    for ind in range(len(outputs)):
+        question = inputs['question'][ind]
+        gt = inputs['gt'][ind]
 
-        # Set up the primary dataset
-        def extract_answer(row):
-            row['gt'] = int(row['answer'].split('####')[-1].strip().replace(',', ''))
-            return row
+        results = pd.DataFrame(map(check_format_and_get_answer, outputs[ind]))
 
-        def add_prompt(row):
-            row['question'] = prompt.format(question=row['question'])
-            return row
-
-        problems = load_dataset("openai/gsm8k", "main", split=split)
-        self.problems = problems.map(extract_answer, batched=False,
-                               ).map(add_prompt, batched=False
-                               ).train_test_split(test_size=0.1, seed=seed)
-        # rename the validation set
-        val_set = self.problems.pop('test')
-        self.problems['eval'] = val_set
-
-        # generation parameters
-        self.use_vllm = use_vllm
-        self.generation_mode = generation_mode
-        self.chat_format = chat_format
-
-        # train parameters that live in the dataset
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.max_length = max_length
-        
-        self.tokenizer = tokenizer
-        # Create data collator
-        self.data_collator = DataCollatorForLanguageModeling(
-            tokenizer=self.tokenizer,
-            return_tensors='pt',
-            mlm=False  # Causal LM, not masked LM,
-        )
-
-        # initialize the dataset
-        self.train_dataset = None
-        self.val_dataset = None
-        self.checkpoint = checkpoint
-    
-    def setup(self, stage=None):
-        """Setup datasets for training/validation"""
-
-        with TemporaryModel(self.checkpoint, self.use_vllm) as generation_pipe:
-            def generate_tokenized_answers(dataset):
-                # generate new question-answer pairs
-                QA_pairs, metrics = generate_QA_pairs(dataset, generation_pipe,
-                                                      self.generation_mode)
-                # Tokenize the dataset
-                tokenized_QA = QA_pairs.map(self.tokenized_chat, batched=False,
-                                            remove_columns=QA_pairs.column_names)
-
-                return tokenized_QA, metrics
-
-            self.train_dataset, train_metrics = generate_tokenized_answers(self.problems['train'])
-            self.val_dataset, val_metrics = generate_tokenized_answers(self.problems['eval'])
-
-            self.train_dataset.set_format(type='torch')
-            self.val_dataset.set_format(type='torch')
-
-        return train_metrics, val_metrics
-
-    def update_model(self, model_checkpoint):
-        """
-        Reload the model that is used for generating data
-        """
-        self.checkpoint = model_checkpoint
-        # delete old 
-        del self.train_dataset
-        del self.val_dataset
-
-        train_metrics, val_metrics = self.setup()
-        return train_metrics, val_metrics
-
-    def tokenized_chat(self, row, include_answer=True):
-        """ Tokenization for question-answer pairs """
-        if self.chat_format:
-            messages = [
-                {"role": "user", "content": row['question']}
-            ]
-            if include_answer:
-                messages.append({"role": "assistant", "content": row['answer']})
-
-            return self.tokenizer.apply_chat_template(messages, tokenize=True,
-                                                      return_dict=True,
-                                                      add_generation_prompt=(not include_answer),
-                                                      )
+        majority_value = results['result'].mode()
+        if len(majority_value) > 1:
+            results['majority_vote'] = None
         else:
-            if include_answer:
-                output = self.tokenizer(row['question'] + 'Answer:' + row['answer'])
-            else:
-                output = self.tokenizer(row['question'])
-            return output
+            try:
+                results = results.assign(majority_vote=majority_value.item())
+            except:
+                print('!!!!!!!!!!!!! error: majority of ', majority_value)
 
-    def train_dataloader(self):
-        """Return training dataloader"""
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=self.num_workers,
-            collate_fn=self.data_collator,
-            pin_memory=True if torch.cuda.is_available() else False
-        )
-    
-    def val_dataloader(self):
-        """Return validation dataloader"""
-        if self.val_dataset is None:
-            return None
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            collate_fn=self.data_collator,
-            pin_memory=True if torch.cuda.is_available() else False
-        )
+        results = results.assign(gt=gt, question=question)
+        full_outputs.append(results)
+
+        # update the metric
+        metrics.append(score_results(results))
+
+    return pd.concat(full_outputs, ignore_index=True), metrics
 
 
-class TemporaryModel(object):
-    def __init__(self, model_checkpoint, use_vllm):
-        self.use_vllm = use_vllm
-        self.raw_model = LlamaLightningModule.from_pretrained(model_checkpoint)
+def chat_formatted_problems(question):
+    return [{"role": "user", "content": question}]
 
-        if self.use_vllm:
-            # apply vllm model
-            raise NotImplementedError('vllm later')
-        else:
-            self.model = pipeline("text-generation",
-                                  model=self.raw_model.model,
-                                  tokenizer=self.raw_model.tokenizer,
-                                  return_full_text=False,
-                                  do_sample=True, temperature=1.,
-                                  num_return_sequences=8)
 
-    def __enter__(self):
-        return self.model
-
-    def __exit__(self, type, value, traceback):
-        self.raw_model.to('cpu')
-        del self.raw_model
-        del self.model
-        gc.collect()
-        torch.mps.empty_cache()
+def chat_formatted_QA(row):
+    return {'messages': [{"role": "user", "content": row["question"]},
+            {"role": "assistant", "content": row['answer']}]}

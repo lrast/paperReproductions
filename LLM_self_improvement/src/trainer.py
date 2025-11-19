@@ -1,86 +1,75 @@
 # Trainers for self-training
+import os
 import shutil
-import pytorch_lightning as pl
+import json
 
-from pytorch_lightning.callbacks import LearningRateMonitor, Callback, ModelCheckpoint
-from pytorch_lightning.loggers import WandbLogger
+from pathlib import Path
+from transformers import TrainerCallback
+from trl import SFTTrainer, SFTConfig
 
 
-def get_trainer(datamodule, num_train_epochs=1, 
-                output_dir=None, run_name='debug', 
+def get_trainer(model, tokenizer, dataset, resume_from=None,
+                current_epoch=0,
+                num_train_epochs=1, output_dir='debug',
                 **kwargs):
-    """
-    Get PyTorch Lightning trainer
-    
-    Args:
-        output_dir: Directory to save checkpoints
-        run_name: Name for wandb run
-        num_train_epochs: Number of training epochs
-        datamodule: Optional DataModule instance for epoch-end updates
-        **kwargs: Additional arguments for Lightning Trainer
-    """
+    """Make single epoch trainer for model"""
+    training_args = SFTConfig(assistant_only_loss=True,
+                              num_train_epochs=num_train_epochs,
+                              output_dir=output_dir,
+                              max_steps=-1,
+                              report_to="wandb",
+                              save_strategy="epoch",
+                              **kwargs)
 
-    # Dataset update callback: saves checkpoints and updates the dataset
+    trainer = SFTTrainer(model=model,
+                         processing_class=tokenizer,
+                         train_dataset=dataset,
+                         args=training_args,
+                         callbacks=[RenameCheckpointToBest()]
+                         )
 
-    dataset_update_callback = DatasetUpdateCallback(datamodule, output_dir)
+    # manually reload trainer state to prevent step based re-calculations
+    if resume_from is not None:
+        # load the previous trainer state and global step count
+        with open(Path(resume_from) / 'trainer_state.json', "r") as f:
+            state_dict = json.load(f)
+            trainer.state.global_step = state_dict['global_step']
 
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=output_dir,
-        filename='best-checkpoint',
-        save_top_k=1,
-        monitor='val/loss',
-        mode='min'
-    )
+        trainer.state.epoch = current_epoch
 
-    lr_monitor = LearningRateMonitor(logging_interval='step')
-    
-    callbacks = [lr_monitor, dataset_update_callback, checkpoint_callback]
-    
-    # Setup wandb logger
-    wandb_logger = WandbLogger(
-        project='huggingface',
-        name=run_name + '_manual'
-    )
+        # Force creation of optimizer and scheduler
+        trainer.create_optimizer()
+        trainer.create_scheduler(num_training_steps=0)
 
-    # Create Lightning trainer
-    trainer = pl.Trainer(
-        max_epochs=num_train_epochs,
-        callbacks=callbacks,
-        logger=wandb_logger,
-        enable_progress_bar=True,
-        log_every_n_steps=1,
-        reload_dataloaders_every_n_epochs=1,
-        **kwargs
-    )
-    
+        trainer._load_optimizer_and_scheduler(resume_from)
+        trainer.lr_scheduler.last_epoch = trainer.state.global_step - 1
+
     return trainer
 
 
-class DatasetUpdateCallback(Callback):
+class RenameCheckpointToBest(TrainerCallback):
     """
-    Callback for generating new datasets from the current model
-    1. save current model to disk 
-    2. invoke the datamodule's update
-    3. log the metrics
+    Saves a copy of the full, resumable checkpoint to a fixed name
+    after the Trainer's internal checkpointing process completes.
     """
-    
-    def __init__(self, datamodule, dirpath=None,
-                 filename='checkpoint-epoch={epoch}', **kwargs):
-        super().__init__()
-        self.datamodule = datamodule
-        self.dirpath = dirpath
-        self.filename = filename
+    def on_save(self, args, state, control, **kwargs):
+        # 1. Find the path to the most recent checkpoint folder
+        latest_checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        
+        # 2. Define the target directory with your known, stable name
+        custom_save_name = "post_train"
+        custom_save_path = os.path.join(args.output_dir, custom_save_name)
 
-    def on_train_epoch_end(self, trainer, pl_module):
-        """Called at the end of each training epoch"""
-        model_path = self.dirpath / self.filename.format(epoch=trainer.current_epoch)
-        pl_module.save_pretrained(model_path)
-
-        train_metrics, val_metrics = self.datamodule.update_model(model_path)
-
-        shutil.rmtree(model_path)
-
-        train_metrics = {f'train/{key}': value for key, value in train_metrics.items()}
-        val_metrics = {f'eval/{key}': value for key, value in val_metrics.items()}
-
-        pl_module.log_dict({**train_metrics, **val_metrics})
+        # Ensure the Trainer successfully created the checkpoint folder
+        if os.path.isdir(latest_checkpoint_dir):
+            print(f"Copying full checkpoint from {latest_checkpoint_dir} to {custom_save_path}")
+            
+            # 3. Handle existing custom folder (delete/clean before copying)
+            if os.path.exists(custom_save_path):
+                shutil.rmtree(custom_save_path)
+            
+            # 4. remave the checkpoint folder
+            shutil.move(latest_checkpoint_dir, custom_save_path)
+        else:
+            # This should generally not happen if save_strategy is set
+            print(f"Warning: Checkpoint folder {latest_checkpoint_dir} not found.")

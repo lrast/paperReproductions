@@ -1,9 +1,0 @@
-{
-"input": { 
-            "model": "llama_pretrain",
-            "data":"gsm8k_processed",
-            "split": "val",
-            "filter_by": "ground truth",
-            "data_out": "gsm8k_correct_gt"
-        }
-}
