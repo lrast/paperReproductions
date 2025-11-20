@@ -3,9 +3,12 @@ import pandas as pd
 
 from datasets import load_dataset, Dataset
 from transformers import pipeline
+from pathlib import Path
 
 from src.answer_generation import check_format_and_get_answer, score_results
 from vllm import LLM, SamplingParams
+
+from tqdm import tqdm
 
 
 def get_raw_dataset(prompt, split='train', seed=42, **kwargs):
@@ -47,6 +50,8 @@ def model_answers(model_dir, raw_dataset, generation_mode,
     """Use the model to generate a question / answer dataset"""
     # question: does this use the tokenizers chat format?
 
+    model_dir = Path(model_dir)
+
     if use_vllm:
         raise NotImplementedError('working on vllm compatibility')
         sampling_params = SamplingParams(n=8, temperature=1.0)
@@ -54,8 +59,8 @@ def model_answers(model_dir, raw_dataset, generation_mode,
 
     else:
         model = pipeline("text-generation",
-                         model=model_dir,
-                         tokenizer=model_dir,
+                         model=str(model_dir),
+                         tokenizer=str(model_dir.parent / 'tokenizer'),
                          return_full_text=False,
                          do_sample=True, temperature=1.,
                          num_return_sequences=8)
@@ -70,7 +75,7 @@ def generate_QA_pairs(dataset, pipeline, generation_mode):
     metrics = []
     outputs = []
 
-    for batch in dataset.iter(batch_size=8):
+    for batch in tqdm(dataset.iter(batch_size=8)):
         # make sure that the inputs are chat formatted
         chat_formatted = list(map(chat_formatted_problems, batch['question']))
 
@@ -78,17 +83,21 @@ def generate_QA_pairs(dataset, pipeline, generation_mode):
         # Empirically, we're fine without it.
 
         answers = pipeline(chat_formatted)
+
         rows, batch_metrics = make_new_rows(batch, answers)
         metrics.extend(batch_metrics)
 
         # filter the answers according to the generation mode.
         match generation_mode:
             case 'gt_answers':
-                return batch
+                rows = pd.DataFrame(batch)
             case 'gt_targets':
                 rows = rows[rows['result'] == rows['gt']]
             case 'majority_vote':
-                rows = rows[rows['result'] == rows['majority_vote']]
+                if rows['majority_vote'].iloc[0] is None:
+                    rows = pd.DataFrame()
+                else:
+                    rows = rows[rows['result'] == rows['majority_vote']]
             case 'perfect_formatting':
                 rows = rows[rows['perfect_formatting'] == 1]
             case 'good_formatting':
@@ -96,8 +105,10 @@ def generate_QA_pairs(dataset, pipeline, generation_mode):
             case _:
                 raise Exception('Unkown generation mode')
 
-        outputs.append(rows.drop(columns=['good_formatting', 'perfect_formatting', 'result',
-                                 'majority_vote']))
+        if len(rows) > 0:
+            rows = rows.drop(columns=['good_formatting', 'perfect_formatting', 'result',
+                             'majority_vote'], errors='ignore')
+            outputs.append(rows)
 
     data_with_answers = Dataset.from_pandas(pd.concat(outputs))
 
@@ -118,13 +129,15 @@ def make_new_rows(inputs, outputs):
         results = pd.DataFrame(map(check_format_and_get_answer, outputs[ind]))
 
         majority_value = results['result'].mode()
-        if len(majority_value) > 1:
+        if len(majority_value) > 1 or len(majority_value) == 0:
             results['majority_vote'] = None
         else:
             try:
                 results = results.assign(majority_vote=majority_value.item())
             except:
+                # hopefully this should be taken care of at this point.
                 print('!!!!!!!!!!!!! error: majority of ', majority_value)
+                print(results)
 
         results = results.assign(gt=gt, question=question)
         full_outputs.append(results)

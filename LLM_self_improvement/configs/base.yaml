@@ -9,6 +9,7 @@ data:
 
 train:
   run_name: debug
+  num_train_epochs: 1
 
 self_improvement:
   num_loops: 10

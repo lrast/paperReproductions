@@ -19,16 +19,20 @@ def generate_data():
     parser.add_argument('--epoch_num', default=0)
 
     args = parser.parse_args()
+    config = OmegaConf.load(args.config_path)
 
-    cfg = OmegaConf.load(args.config_path)
-    run = wandb.init(id=args.logger_id)
+    run = wandb.init(project='self-improvement',
+                     group=args.logger_id,
+                     job_type='child',
+                     name=f'inference_step_{args.epoch_num}'
+                     )
 
-    train_raw = get_raw_dataset(**cfg.data, split='train')
-    val_raw = get_raw_dataset(**cfg.data, split='eval')
+    train_raw = get_raw_dataset(**config.data, split='train')
+    val_raw = get_raw_dataset(**config.data, split='eval')
 
-    next_dataset, train_metrics = model_answers(args.model_path, train_raw, **cfg.data)
+    next_dataset, train_metrics = model_answers(args.model_path, train_raw, **config.data)
     next_dataset.save_to_disk(args.data_out)
-    _, val_metrics = model_answers(args.model_path, val_raw, **cfg.data)
+    _, val_metrics = model_answers(args.model_path, val_raw, **config.data)
 
     # Log the metrics to wandb 
 
@@ -37,9 +41,9 @@ def generate_data():
     val_metrics = {**{'eval/'+k: v for k, v in val_metrics.items()},
                    **{'train/epoch': float(args.epoch_num)}}
 
-    print('metrics: ', train_metrics)
-    run.log(train_metrics)
-    run.log(val_metrics)
+    run.log(train_metrics, step=int(args.epoch_num))
+    run.log(val_metrics, step=int(args.epoch_num))
+    run.finish()
 
 
 if __name__ == "__main__":

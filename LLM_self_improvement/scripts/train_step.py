@@ -23,9 +23,13 @@ def train():
     parser.add_argument('--epoch_num', default=0)
 
     args = parser.parse_args()
-
     config = OmegaConf.load(args.config_path)
-    wandb.init(id=args.logger_id)
+
+    run = wandb.init(project='self-improvement',
+                     group=args.logger_id,
+                     job_type='child',
+                     name=f'train_step_{args.epoch_num}'
+                     )
 
     model, tokenizer = load_model_and_tokenizer(args.resume_from)
     dataset = load_from_disk(args.data_in)
@@ -33,22 +37,13 @@ def train():
     dataset = dataset.map(chat_formatted_QA, remove_columns=dataset.column_names)
 
     # Train
-    if int(args.epoch_num) == 0:
-        resume_from = None
-    else:
-        resume_from = args.resume_from
-
-    # override resumption logic
-    resume_from = None
-
     trainer = get_trainer(model, tokenizer, dataset,
-                          resume_from=resume_from, current_epoch=args.epoch_num,
-                          num_train_epochs=1, output_dir=args.ckpt_out,
+                          output_dir=args.ckpt_out,
                           **config.train)
 
-    print('global step before:', trainer.state.global_step)
     trainer.train()
-    print('global step after:', trainer.state.global_step)
+    trainer.save_model(args.ckpt_out)
+    run.finish()
 
 
 if __name__ == "__main__":

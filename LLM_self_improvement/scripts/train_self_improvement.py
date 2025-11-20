@@ -23,13 +23,12 @@ def main(config):
     clear_old = True
     # initialization steps: initialize the dataset
 
-    # initialize the wandb run, send forward run id
-    run = wandb.init(project='self-improvement', name=config.train.run_name)
-    run_id = run.id
+    # generate a group id for wandb to group these runs
+    group_id = wandb.util.generate_id()
 
     # initialization step
-    curr_ckpt = output_dir / ckpt_name.format(epoch=-1) / 'post_train'
-    curr_data = output_dir / data_name.format(epoch=-1)
+    curr_ckpt = output_dir / ckpt_name.format(epoch=0)
+    curr_data = output_dir / data_name.format(epoch=0)
 
     initialize_model_and_tokenizer(curr_ckpt, **config.model)
 
@@ -37,17 +36,17 @@ def main(config):
                 ['--config_path', run_config,
                  '--data_out', curr_data,
                  '--model_path', curr_ckpt,
-                 '--logger_id', run_id,
-                 '--epoch_num', str(-1)
+                 '--logger_id', group_id,
+                 '--epoch_num', str(0)
                  ])
 
     for epoch in range(config.self_improvement.num_loops):
-        next_ckpt = output_dir / ckpt_name.format(epoch=epoch)
-        next_data = output_dir / data_name.format(epoch=epoch)
+        next_ckpt = output_dir / ckpt_name.format(epoch=epoch+1)
+        next_data = output_dir / data_name.format(epoch=epoch+1)
 
         general_args = ['--config_path', run_config,
-                        '--logger_id', run_id,
-                        '--epoch_num', str(epoch)
+                        '--logger_id', group_id,
+                        '--epoch_num', str(epoch+1)
                         ]
 
         # train model and update the model checkpoint pointer
@@ -58,9 +57,9 @@ def main(config):
                      ] + general_args)
 
         if clear_old and (epoch < config.self_improvement.num_loops - 1):
-            shutil.rmtree(curr_ckpt.parent)
+            shutil.rmtree(curr_ckpt)
 
-        curr_ckpt = next_ckpt / 'post_train'
+        curr_ckpt = next_ckpt
 
         # make a new dataset and update the data checkpoint pointer
         run_process('scripts.inference_step',
@@ -73,20 +72,17 @@ def main(config):
 
         curr_data = next_data
 
-    wandb.finish()
-
 
 def run_process(script_name, args):
     """Executes a script as a separate system process and waits for it to complete.
     Forwards errors to the main process to facilitate debugging.
     """
     print(f"\n===== 🚀 Starting {script_name} =====")
+
     command = ["python", '-m', script_name] + args
-    
+
     # Use Popen to run the script and wait for its completion
-    process = subprocess.Popen(command, stdout=None, stderr=None)
-    process.wait()
-    #stdout, stderr = process.communicate()
+    process = subprocess.run(command, stdout=None, stderr=None)
     
     if process.returncode != 0:
         print(f"!!! Error in {script_name} !!!")

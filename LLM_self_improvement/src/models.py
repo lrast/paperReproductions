@@ -1,5 +1,6 @@
 # Models for self-training
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from pathlib import Path
 
 
 def initialize_model_and_tokenizer(target_directory,
@@ -8,6 +9,7 @@ def initialize_model_and_tokenizer(target_directory,
                                    **kwargs):
     """Setup model and tokenizer in target directory"""
     model = AutoModelForCausalLM.from_pretrained(base_model)
+    target_directory = Path(target_directory)
 
     tokenizer = AutoTokenizer.from_pretrained(base_model)
     tokenizer.add_special_tokens({'pad_token': '<|finetune_right_pad_id|>'})
@@ -20,11 +22,13 @@ def initialize_model_and_tokenizer(target_directory,
             tokenizer.chat_template = template
 
     model.save_pretrained(target_directory)
-    tokenizer.save_pretrained(target_directory)
+    tokenizer.save_pretrained(target_directory.parent / 'tokenizer')
 
 
 def load_model_and_tokenizer(directory):
     """Load model and tokenizer from target directory"""
+    directory = Path(directory)
+
     model = AutoModelForCausalLM.from_pretrained(directory)
-    tokenizer = AutoTokenizer.from_pretrained(directory)
+    tokenizer = AutoTokenizer.from_pretrained(directory.parent / 'tokenizer')
     return model, tokenizer
