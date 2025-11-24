@@ -2,12 +2,11 @@
 import re
 
 
-def check_format_and_get_answer(output):
+def check_format_and_get_answer(generated_text):
     """ check whether the answer ends with
         'The final answer is: __'
         and returns the imputed answer
     """
-    generated_text = output['generated_text'] 
     result = {'answer': generated_text, 'good_formatting': 0, 'perfect_formatting': 0, 'result': None}
 
     last_line = generated_text.split('\n')[-1]

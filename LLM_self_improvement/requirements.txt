@@ -3,6 +3,7 @@ torch>=2.0.0
 transformers>=4.35.0
 datasets>=2.14.0
 pytorch-lightning>=2.0.0
+hf_transfer
 
 # Data processing
 pandas>=2.0.0
@@ -14,4 +15,4 @@ hydra-core>=1.3.0
 wandb>=0.15.0
 
 # Optional: For inference worker (vllm is typically installed separately)
-vllm>=0.2.0  # Uncomment if needed, may require specific CUDA setup
+vllm>=0.2.0

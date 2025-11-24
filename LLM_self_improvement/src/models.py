@@ -22,7 +22,7 @@ def initialize_model_and_tokenizer(target_directory,
             tokenizer.chat_template = template
 
     model.save_pretrained(target_directory)
-    tokenizer.save_pretrained(target_directory.parent / 'tokenizer')
+    tokenizer.save_pretrained(target_directory)
 
 
 def load_model_and_tokenizer(directory):
@@ -30,5 +30,5 @@ def load_model_and_tokenizer(directory):
     directory = Path(directory)
 
     model = AutoModelForCausalLM.from_pretrained(directory)
-    tokenizer = AutoTokenizer.from_pretrained(directory.parent / 'tokenizer')
+    tokenizer = AutoTokenizer.from_pretrained(directory)
     return model, tokenizer

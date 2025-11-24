@@ -1,4 +1,5 @@
 # Datasets for self-training
+import math
 import pandas as pd
 
 from datasets import load_dataset, Dataset
@@ -24,7 +25,7 @@ def get_raw_dataset(prompt, split='train', seed=42, **kwargs):
     if split == 'test':
         problems = load_dataset("openai/gsm8k", "main", split='test')
     else:
-        problems = load_dataset("openai/gsm8k", "main", split='train[0:30]')
+        problems = load_dataset("openai/gsm8k", "main", split='train')
 
     problems = problems.map(extract_answer, batched=False,
                             ).map(add_prompt, batched=False)
@@ -52,37 +53,56 @@ def model_answers(model_dir, raw_dataset, generation_mode,
 
     model_dir = Path(model_dir)
 
+    # initialize the pipeline
     if use_vllm:
-        raise NotImplementedError('working on vllm compatibility')
-        sampling_params = SamplingParams(n=8, temperature=1.0)
-        model = LLM(model_dir)
+        sampling_params = SamplingParams(n=8, temperature=1.0, max_tokens=512)
+        vllm_model = LLM(model_dir)
+
+        def model_outputs(questions_column):
+            """Takes in a dataset column, outputs a list of lists of answers"""
+            outputs = vllm_model.chat(list(questions_column),
+                                      sampling_params=sampling_params)
+
+            # unpack generated texts
+            answers = [[answer.text for answer in batch.outputs] for batch in outputs]
+            return answers
 
     else:
         model = pipeline("text-generation",
                          model=str(model_dir),
-                         tokenizer=str(model_dir.parent / 'tokenizer'),
+                         tokenizer=str(model_dir),
                          return_full_text=False,
                          do_sample=True, temperature=1.,
-                         num_return_sequences=8)
+                         num_return_sequences=8,
+                         max_new_tokens=512
+                         )
 
-        QA_pairs, metrics = generate_QA_pairs(raw_dataset, model, generation_mode)
+        def model_outputs(questions_column):
+            """Takes in a dataset column, outputs a list of lists of answers"""
+            outputs = model(list(questions_column))
 
-    return QA_pairs, metrics
+            # unpack generated texts
+            answers = [[answer['generated_text'] for answer in batch]
+                       for batch in outputs]
 
+            return answers
 
-def generate_QA_pairs(dataset, pipeline, generation_mode):
-    """ Primary interface for answer generation"""
+    # pre-process problems to chat formatted
+    dataset = raw_dataset.map(lambda row:
+                              {'formatted_question': chat_formatted_problems(row['question'])}
+                              )
+
+    # apply pipeline in batches
     metrics = []
     outputs = []
 
-    for batch in tqdm(dataset.iter(batch_size=8)):
+    for batch in tqdm(dataset.iter(batch_size=8), total=math.ceil(len(dataset) / 8)):
         # make sure that the inputs are chat formatted
-        chat_formatted = list(map(chat_formatted_problems, batch['question']))
 
         # Question: do we need to add an assistant prompt to start generation?
         # Empirically, we're fine without it.
 
-        answers = pipeline(chat_formatted)
+        answers = model_outputs(batch['formatted_question'])
 
         rows, batch_metrics = make_new_rows(batch, answers)
         metrics.extend(batch_metrics)
@@ -110,7 +130,7 @@ def generate_QA_pairs(dataset, pipeline, generation_mode):
                              'majority_vote'], errors='ignore')
             outputs.append(rows)
 
-    data_with_answers = Dataset.from_pandas(pd.concat(outputs))
+    data_with_answers = Dataset.from_pandas(pd.concat(outputs), preserve_index=False)
 
     return data_with_answers, pd.DataFrame(metrics).mean().to_dict()
 
