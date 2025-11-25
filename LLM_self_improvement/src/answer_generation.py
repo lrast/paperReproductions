@@ -1,5 +1,6 @@
 # Functions for answer generation and checking
 import re
+import numpy as np
 
 
 def check_format_and_get_answer(generated_text):
@@ -7,18 +8,16 @@ def check_format_and_get_answer(generated_text):
         'The final answer is: __'
         and returns the imputed answer
     """
-    result = {'answer': generated_text, 'good_formatting': 0, 'perfect_formatting': 0, 'result': None}
+    result = {'answer': generated_text, 'good_formatting': 0, 'perfect_formatting': 0, 'result': np.nan}
 
     last_line = generated_text.split('\n')[-1]
 
     last_line_numbers = re.findall(r'[+-]?[0-9,]*\.?[0-9]+', last_line)
 
     if len(last_line_numbers) > 0:
-        try:
-            extracted_answer = int(float(last_line_numbers[-1].replace(',', '')))
-            result['result'] = extracted_answer 
-        except OverflowError:
-            print('Overflow error in answer:', last_line_numbers[-1])
+        # Handle run-on string outputs 
+        str_answer = last_line_numbers[-1].replace(',', '')[0:300]
+        result['result'] = int(float(str_answer))
 
         if last_line.startswith('The final answer is:'):
             result['perfect_formatting'] = 1

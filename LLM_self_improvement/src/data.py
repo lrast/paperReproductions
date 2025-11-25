@@ -1,6 +1,7 @@
 # Datasets for self-training
 import math
 import pandas as pd
+import numpy as np
 
 from datasets import load_dataset, Dataset
 from transformers import pipeline
@@ -56,12 +57,13 @@ def model_answers(model_dir, raw_dataset, generation_mode,
     # initialize the pipeline
     if use_vllm:
         sampling_params = SamplingParams(n=8, temperature=1.0, max_tokens=512)
-        vllm_model = LLM(model_dir)
+        vllm_model = LLM(str(model_dir))
 
         def model_outputs(questions_column):
             """Takes in a dataset column, outputs a list of lists of answers"""
             outputs = vllm_model.chat(list(questions_column),
-                                      sampling_params=sampling_params)
+                                      sampling_params=sampling_params,
+                                      use_tqdm=False)
 
             # unpack generated texts
             answers = [[answer.text for answer in batch.outputs] for batch in outputs]
@@ -149,15 +151,10 @@ def make_new_rows(inputs, outputs):
         results = pd.DataFrame(map(check_format_and_get_answer, outputs[ind]))
 
         majority_value = results['result'].mode()
-        if len(majority_value) > 1 or len(majority_value) == 0:
-            results['majority_vote'] = None
+        if len(majority_value) == 1:
+            results = results.assign(majority_vote=majority_value.item())
         else:
-            try:
-                results = results.assign(majority_vote=majority_value.item())
-            except:
-                # hopefully this should be taken care of at this point.
-                print('!!!!!!!!!!!!! error: majority of ', majority_value)
-                print(results)
+            results['majority_vote'] = np.nan
 
         results = results.assign(gt=gt, question=question)
         full_outputs.append(results)
