@@ -14,6 +14,9 @@ def get_trainer(model, tokenizer, dataset,
                               max_steps=-1,
                               report_to="wandb",
                               save_strategy="no",
+                              per_device_train_batch_size=2,
+                              gradient_accumulation_steps=4,
+                              max_length=512,
                               **kwargs)
 
     trainer = SFTTrainer(model=model,

@@ -137,9 +137,6 @@ def model_answers(model_dir, raw_dataset, generation_mode,
 
     data_with_answers = Dataset.from_pandas(pd.concat(outputs), preserve_index=False)
 
-    # free LLM memory usage
-    del model
-
     return data_with_answers, pd.DataFrame(metrics).mean().to_dict()
 
 

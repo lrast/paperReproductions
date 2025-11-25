@@ -2,8 +2,6 @@
 
 import wandb
 import argparse
-import torch
-import gc
 
 from omegaconf import OmegaConf
 
@@ -44,11 +42,6 @@ def generate_data():
     run.log(train_metrics, step=int(args.epoch_num))
     run.log(val_metrics, step=int(args.epoch_num))
     run.finish()
-
-    # cleanup
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
