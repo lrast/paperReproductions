@@ -7,6 +7,8 @@ from datasets import load_dataset, Dataset
 from transformers import pipeline
 from pathlib import Path
 
+import vllm
+
 from src.answer_generation import check_format_and_get_answer, score_results
 from vllm import LLM, SamplingParams
 
@@ -57,13 +59,13 @@ def model_answers(model_dir, raw_dataset, generation_mode,
     # initialize the pipeline
     if use_vllm:
         sampling_params = SamplingParams(n=8, temperature=1.0, max_tokens=512)
-        vllm_model = LLM(str(model_dir))
+        model = LLM(str(model_dir))
 
-        def model_outputs(questions_column):
+        def model_outputs(questions_column, model=model):
             """Takes in a dataset column, outputs a list of lists of answers"""
-            outputs = vllm_model.chat(list(questions_column),
-                                      sampling_params=sampling_params,
-                                      use_tqdm=False)
+            outputs = model.chat(list(questions_column),
+                                 sampling_params=sampling_params,
+                                 use_tqdm=False)
 
             # unpack generated texts
             answers = [[answer.text for answer in batch.outputs] for batch in outputs]
@@ -79,7 +81,7 @@ def model_answers(model_dir, raw_dataset, generation_mode,
                          max_new_tokens=512
                          )
 
-        def model_outputs(questions_column):
+        def model_outputs(questions_column, model=model):
             """Takes in a dataset column, outputs a list of lists of answers"""
             outputs = model(list(questions_column))
 
@@ -98,8 +100,9 @@ def model_answers(model_dir, raw_dataset, generation_mode,
     metrics = []
     outputs = []
 
-    for batch in tqdm(dataset.iter(batch_size=8), total=math.ceil(len(dataset) / 8)):
+    for batch in tqdm(dataset.iter(batch_size=32), total=math.ceil(len(dataset) / 32)):
         # make sure that the inputs are chat formatted
+        # Cloud machines: batch size: 32
 
         # Question: do we need to add an assistant prompt to start generation?
         # Empirically, we're fine without it.
@@ -133,6 +136,9 @@ def model_answers(model_dir, raw_dataset, generation_mode,
             outputs.append(rows)
 
     data_with_answers = Dataset.from_pandas(pd.concat(outputs), preserve_index=False)
+
+    # free LLM memory usage
+    del model
 
     return data_with_answers, pd.DataFrame(metrics).mean().to_dict()
 

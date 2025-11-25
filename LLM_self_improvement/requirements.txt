@@ -1,9 +1,10 @@
 # Core ML/DL libraries
 torch>=2.0.0
-transformers>=4.35.0
+transformers==4.57.1
 datasets>=2.14.0
 pytorch-lightning>=2.0.0
 hf_transfer
+trl>=0.25
 
 # Data processing
 pandas>=2.0.0

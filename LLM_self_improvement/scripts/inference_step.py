@@ -2,9 +2,10 @@
 
 import wandb
 import argparse
+import torch
+import gc
+
 from omegaconf import OmegaConf
-# import vllm # If using vLLM
-# import torch
 
 from src.data import get_raw_dataset, model_answers
 
@@ -35,7 +36,6 @@ def generate_data():
     _, val_metrics = model_answers(args.model_path, val_raw, **config.data)
 
     # Log the metrics to wandb 
-
     train_metrics = {**{'train/'+k: v for k, v in train_metrics.items()},
                      **{'train/epoch': float(args.epoch_num)}}
     val_metrics = {**{'eval/'+k: v for k, v in val_metrics.items()},
@@ -44,6 +44,11 @@ def generate_data():
     run.log(train_metrics, step=int(args.epoch_num))
     run.log(val_metrics, step=int(args.epoch_num))
     run.finish()
+
+    # cleanup
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
