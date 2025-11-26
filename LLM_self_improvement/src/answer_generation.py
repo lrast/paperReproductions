@@ -1,4 +1,4 @@
-# Functions for answer generation and checking
+# Functions for answer extraction and format checking
 import re
 import numpy as np
 

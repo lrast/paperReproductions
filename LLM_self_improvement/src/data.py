@@ -7,8 +7,6 @@ from datasets import load_dataset, Dataset
 from transformers import pipeline
 from pathlib import Path
 
-import vllm
-
 from src.answer_generation import check_format_and_get_answer, score_results
 from vllm import LLM, SamplingParams
 
