@@ -3,3 +3,6 @@ accelerate
 transformers
 datasets
 simple-parsing
+wandb
+flash-attn
+bitsandbytes
